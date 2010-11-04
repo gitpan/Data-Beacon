@@ -1,0 +1,26 @@
+NAME
+    Data::Beacon - BEACON format parser and serializer
+
+DESCRIPTION
+    This Perl 5 module provides a class to parse and serialize BEACON format.
+    A command client script named 'beacon' is also included.
+
+INSTALLATION
+    You can either get releases from CPAN, or get the latest development
+    version from github. To manually install from the sources, use:
+
+    $ perl Makefile.PL
+    $ make test
+    $ make install # or: sudo make install
+
+BUGS
+    Please report any bugs or feature requests to this project's GitHub
+    repository at:
+
+    http://github.com/nichtich/p5-data-beacon/issues
+
+    Thank you!   
+
+AUTHOR
+    Jakob Voss <jakob.voss@gbv.de>
+
