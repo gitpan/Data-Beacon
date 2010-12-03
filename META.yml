@@ -1,10 +1,10 @@
 --- #YAML:1.0
 name:               Data-Beacon
-version:            0.2.1
+version:            0.2.5
 abstract:           BEACON format validating parser and serializer
 author:
     - Jakob Voss <jakob.voss@gbv.de>
-license:            unknown
+license:            perl
 distribution_type:  module
 configure_requires:
     ExtUtils::MakeMaker:  0
@@ -14,7 +14,14 @@ requires:
     Data::Validate::URI:  0
     Getopt::Long:         0
     Pod::Usage:           0
-    Time::Piece:          0
+    Scalar::Util:         0
+    Time::Piece:          1.08
+    URI::Escape:          1.0
+resources:
+    bugtracker:  http://github.com/nichtich/p5-data-beacon/issues
+    homepage:    http://github.com/nichtich/p5-data-beacon
+    license:     http://dev.perl.org/licenses/
+    repository:  http://github.com/toddr/p5-data-beacon
 no_index:
     directory:
         - t

@@ -9,20 +9,24 @@ Data::Beacon - BEACON format validating parser and serializer
 
 =cut
 
-use Data::Validate::URI qw(is_uri);
 use Time::Piece;
+use Scalar::Util qw(blessed);
+use URI::Escape;
 use Carp;
 
-our $VERSION = '0.2.1';
+our $VERSION = '0.2.5';
 
 use base 'Exporter';
-our @EXPORT = qw(getbeaconlink parsebeaconlink beacon);
+our @EXPORT = qw(plainbeaconlink beacon);
 
 =head1 SYNOPSIS
 
   use Data::Beacon;
 
   $beacon = new SeeAlso::Beacon( $beaconfile );
+  $beacon = beacon( $beaconfile ); # equivalent
+
+  $beacon = beacon( { FOO => "bar" } ); # empty Beacon with meta fields
 
   $beacon->meta();                                   # get all meta fields
   $beacon->meta( 'DESCRIPTION' => 'my best links' ); # set meta fields
@@ -31,46 +35,96 @@ our @EXPORT = qw(getbeaconlink parsebeaconlink beacon);
   print $beacon->metafields();
 
   $beacon->parse(); # proceed parsing links
-  $beacon->parse( error => sub { print STDERR $_[0] . "\n" } );
+
+  $beacon->parse( error => 'print' );          # print errors to STDERR
+  $beacon->parse( error => \&error_handler );
 
   $beacon->parse( $beaconfile );
   $beacon->parse( \$beaconstring );
   $beacon->parse( sub { return $nextline } );
 
   $beacon->count();      # number of parsed links
-  $beacon->lines();      # number of lines
   $beacon->errorcount(); # number of parsing errors
 
 =head1 DESCRIPTION
 
 This package implements a parser and serializer for BEACON format with
-dedicated error handling.
+dedicated error handling. A B<Beacon>, as implemente by C<Data::Beacon>
+is I<a set of links> together with some I<meta fields> that describe it.
+Each link consists of four values I<source> (also refered to as I<id>),
+I<label>, I<description>, and I<target>, where source and target are
+mandatory URIs, and label and description are strings, being the empty 
+string by default.
+
+B<BEACON format> is the serialization format for Beacons. It defines a
+very condense syntax to express links without having to deal much with
+technical specifications.
+
+See L<http://meta.wikimedia.org/wiki/BEACON> for a more detailed  description.
+
+=head2 SERIALIZING
+
+To serialize only BEACON meta fields, create a new Beacon object, and set its
+meta fields (passed to the constructor, or with L</meta>). You can then get 
+the meta fields in BEACON format with L</metafields>:
+
+  my $beacon = beacon( { PREFIX => ..., TARGET => ... } );
+  print $beacon->metafields;
+
+The easiest way to serialize links in BEACON format, is to set your Beacon 
+object's link handler to C<print>, so each link is directly printed to STDOUT.
+By setting the error handler also to C<print>, errors are printed to STDERR.
+
+  my $beacon = beacon( \%metafields, errors => 'print', links => 'print' );
+  print $b->metafields();
+
+  while ( ... ) {
+      $beacon->appendlink( $source, $label, $description, $target );
+  }
+
+Alternatively you can use the function L</plainbeaconlink>. In this case you
+should validate links before printing:
+
+  if ( $beacon->appendlink( $source, $label, $description, $target ) ) {
+      print plainbeaconlink( $beacon->link ) . "\n";
+  }
 
 =head2 PARSING
 
-You can parse BEACON from a file this way, using a link handler callback:
+You can parse BEACON format either as iterator:
 
-  my $beacon = new SeeAlso::Beacon( $filename );
+  my $beacon = beacon( $file );
+  while ( $beacon->nextlink ) {
+      my ($source, $label, $description, $target, $sourceuri, $targeturi) = $beacon->link;
+      ...
+  }
+
+Or by push parsing with handler callbacks:
+
+  my $beacon = beacon( $file );
   $beacon->parse( 'link' => \link_handler );
   $errors = $beacon->errorcount;
 
-Alternatively you can use the parser as iterator:
-
-  my $beacon = new SeeAlso::Beacon( $filename );
-  while (my $link = $beacon->nextlink()) {
-      if (ref($link)) {
-          my ($id, $label, $description, $to, $fullid, $fulluri) = @$link;
-      } else {
-          my $error = $link;
-      }
-  }
 
 Instead of a filename, you can also provide a scalar reference, to parse
-from a string.
+from a string. The meta fields are parsed immediately:
+
+  my $beacon = beacon( $file );
+  print $beacon->metafields . "\n";
+  my $errors = $beacon->errorcount;
+
+To quickly parse a BEACON file:
+
+  use Data::Beacon;
+  beacon($file)->parse();
+
+=head2 QUERYING
+
+
 
 =head1 METHODS
 
-=head2 new ( [ $from ] { handler => coderef } )
+=head2 new ( [ $from ] { handler => coderef } | $metafields )
 
 Create a new Beacon object, optionally from a given file. If you specify a 
 source via C<$from> argument or as parameter C<from =E<gt> $from>, it will
@@ -100,7 +154,7 @@ error counter of this object or modify C<lasterror>.
 
 =cut
 
-sub meta {
+sub meta { # TODO: document meta fields
     my $self = shift;
     return %{$self->{meta}} unless @_;
 
@@ -124,28 +178,32 @@ sub meta {
             delete $self->{meta}->{$key};
         } else { # check format of known meta fields
             if ($key eq 'TARGET') {
-              # TODO: transform deprecated $PND etc.?
-              $value =~ s/{id}/{ID}/g;
-              $value =~ s/{label}/{LABEL}/g;
-              croak 'Invalid #TARGET field: must contain {ID} or {LABEL}'
-                  unless $value =~ /{ID}|{LABEL}/;
-              my $uri = $value; 
-              $uri =~ s/{ID}|{LABEL}//g;
-              croak 'Invalid #TARGET field: must be an URI pattern'
-                  unless is_uri($uri);
+                # TODO: transform deprecated $PND etc.?
+                $value =~ s/{id}/{ID}/g;
+                $value =~ s/{label}/{LABEL}/g;
+                # TODO: document that {ID} in target is optional (will be appended)
+                $value .= '{ID}' unless $value =~ /{ID}|{LABEL}/; 
+                my $uri = $value; 
+                $uri =~ s/{ID}|{LABEL}//g;
+                croak 'Invalid #TARGET field: must be an URI pattern'
+                    unless _is_uri($uri);
             } elsif ($key eq 'FEED') {
                 croak 'FEED meta value must be a HTTP/HTTPS URL' 
                     unless $value =~ 
   /^http(s)?:\/\/[a-z0-9-]+(.[a-z0-9-]+)*(:[0-9]+)?(\/[^#|]*)?(\?[^#|]*)?$/i;
             } elsif ($key eq 'PREFIX') {
                 croak 'PREFIX meta value must be a URI' 
-                    unless is_uri($value);
+                    unless _is_uri($value);
+            } elsif ($key eq 'TARGETPREFIX') {
+                croak 'TARGETPREFIX meta value must be a URI' 
+                    unless _is_uri($value);
             } elsif ( $key =~ /^(REVISIT|TIMESTAMP)$/) {
                 if ($value =~ /^[0-9]+$/) { # seconds since epoch
-                    $value = gmtime($value)->datetime(); 
+                    $value = gmtime($value)->datetime() . 'Z'; 
                     # Note that this conversion does not trigger an error
                     # or warning, but may be dropped in a future version
                 } else {
+                    # ISO 8601 combined date and time in UTC
                     $value =~ s/Z$//;
                     croak $key . ' meta value must be of form YYYY-MM-DDTHH:MM:SSZ'
                         unless $value = Time::Piece->strptime( 
@@ -171,6 +229,10 @@ sub meta {
             } elsif ( $key eq 'COUNT' ) {
                 $self->{expected_count} = $value;
             }
+            if ((defined $self->{meta}->{TARGET} and $key eq 'TARGETPREFIX') 
+              ||(defined $self->{meta}->{TARGETPREFIX} and $key eq 'TARGET')) {
+                croak "TARGET and TARGETPREFIX cannot be set both";
+            } 
             $self->{meta}->{$key} = $value;
         }
     }
@@ -193,7 +255,7 @@ sub count {
 
 =head2 line
 
-Returns the current line number.
+Returns the current line number or zero.
 
 =cut
 
@@ -227,7 +289,7 @@ sub errorcount {
 
 Return all meta fields, serialized and sorted as string. Althugh the order of
 fields is irrelevant, but this implementation always returns the same fields
-in same order. To get all meta fields as hash, use the 'meta' method.
+in same order. To get all meta fields as hash, use the C<meta> method.
 
 =cut
 
@@ -237,8 +299,9 @@ sub metafields {
     my %fields = %meta;
 
     # determine default order
-    my @order = qw(FORMAT PREFIX TARGET FEED CONTACT INSTITUTION DESCRIPTION
-        TIMESTAMP UPDATE REVISIT MESSAGE ONEMESSAGE SOMEMESSAGE REMARK);
+    my @order = 
+      qw(FORMAT PREFIX TARGET TARGETPREFIX FEED CONTACT INSTITUTION DESCRIPTION
+         TIMESTAMP UPDATE REVISIT MESSAGE ONEMESSAGE SOMEMESSAGE REMARK);
     delete $fields{$_} foreach @order;
     push @order, grep { !($_ =~ /^(EXAMPLES|COUNT)$/) } sort keys %fields;
     push @order, qw(EXAMPLES COUNT);
@@ -247,7 +310,7 @@ sub metafields {
     return @lines ? join ("\n", @lines) . "\n" : "";
 }
 
-=head2 parse ( [ $from ] { handler => coderef | pre => $hashref } )
+=head2 parse ( [ $from ] { handler => coderef | option => $value } )
 
 Parse all remaining links (push parsing). If provided a C<from> parameter,
 this starts a new Beacon. That means the following three are equivalent:
@@ -262,8 +325,11 @@ this starts a new Beacon. That means the following three are equivalent:
 If C<from> is a scalar, it is used as file to parse from. Alternatively you
 can supply a string reference, or a code reference.
 
-The C<pre> argument can be used to set some meta fields before parsing starts.
+The C<pre> option can be used to set some meta fields before parsing starts.
 These fields are cached and reused every time you call C<parse>.
+
+If the C<mtime> option is given, the TIMESTAMP meta value will be initialized
+as last modification time of the given file.
 
 By default, all errors are silently ignored, unless you specifiy an C<error>
 handler. The last error can be retrieved with the C<lasterror> method and the
@@ -274,10 +340,27 @@ Finally, the C<link> handler can be a code reference to a method that is
 called for each link (that is each line in the input that contains a valid
 link). The following arguments are passed to the handler:
 
- ( $id, $label, $description, $to, $fullid, $fulluri )
+=over
 
-Please note that C<$label>, C<$description>, and C<$to> may be the empty
-string, while C<$fullid> and C<$fulluri> are URIs.
+=item C<$source>
+
+Link source as given in BEACON format.
+This may be abbreviated but not the empty string.
+
+=item C<$label>
+
+Label as string. This may be the empty string.
+
+=item C<$description>
+
+Description as string. This may be the empty string.
+
+=item C<$target>
+
+Link target as given in BEACON format.
+This may be abbreviated or the empty string.
+
+=back
 
 The number of sucessfully parsed links is returned by C<count>.
 
@@ -297,7 +380,7 @@ sub parse {
     $line = $self->_readline() unless defined $line;
 
     while (defined $line) {
-        $self->_parseline( $line );
+        $self->appendline( $line );
         $line = $self->_readline();
     } 
 
@@ -306,14 +389,14 @@ sub parse {
         if ($self->count != $self->{expected_count}) {
             my $msg = "expected " . $self->{expected_count} 
                     . " links, but got " . $self->count;
-            $self->_handle_error( $msg, $self->{line}, '' );
+            $self->_handle_error( $msg, '' );
         }
     }
     if (defined $self->{expected_examples}) {
         if (keys %{ $self->{expected_examples} }) {
             my $msg = 'examples not found: '
                     . join '|', keys %{ $self->{expected_examples} };
-            $self->_handle_error( $msg, $self->{line}, '' );
+            $self->_handle_error( $msg, '' );
         }
     }
 
@@ -322,10 +405,10 @@ sub parse {
 
 =head2 nextlink
 
-Read the input stream until the next link and return it (pull parsing).
-Returns an array reference for a valid link, or undef after end of parsing.
-This method skips over empty lines and errors, but calls error and link
-handler, if enabled.
+Read from the input stream until the next link has been parsed. Empty lines
+and invalid lines are skipped, but the error handler is called on invalid 
+lines. This method can be used for pull parsing. Always returns either the
+link as list or an empty list if the end of input has been reached.
 
 =cut
 
@@ -341,26 +424,172 @@ sub nextlink {
     }
 
     do {
-        my $link = $self->_parseline( $line );
-        return $link if ref($link) and @$link; # non-empty array => link
-        # proceed on empty lines or errors 
+        my @link = $self->appendline( $line );
+        return @link if @link; # proceed on empty lines or errors
     } while($line = $self->_readline());
 
-    return undef; # undef => EOF
+    return; # EOF
 }
 
+=head2 link
+
+Returns the last valid link, that has been read. The link is returned
+as list of four values (source, label, description, target) without
+expansion. Use the L</expanded> method to get the link with full URIs.
+
+=cut
+
+sub link {
+    my $self = shift;
+    return @{$self->{link}} if $self->{link};
+}
+
+=head2 expanded
+
+Returns the last valid link, that has been read in expanded form. The 
+link is returned as list of four values (source, label, description, 
+target), possibly expanded by the meta fields PREFIX, TARGET/TARGETPREFIX.
+
+=cut
+
+sub expanded {
+    my $self = shift;
+    if ( $self->{link} ) {
+        $self->_expandlink( $self->{link} );
+        return @{$self->{link}};
+    }
+}
+
+=head2 expandlink ( $source, $label, $description, $target )
+
+Expand a link, consisting of source (mandatory), and label, description,
+and target (all optional). Returns the expanded link as array with four 
+values, or an empty list. This method does append the link to the Beacon
+object, nor call any handlers.
+
+=cut
+
+sub expandlink {
+    my $self = shift;
+
+    my @fields = @_ > 0 ? @_ : '';
+    @fields = map { s/^\s+|\s+$//g; $_ }
+              map { defined $_ ? $_ : '' } @fields;
+
+    return if $fields[0] eq '' or (grep { $_ =~ /\||\n|\r/ } @fields);
+
+    $self->_expandlink( \@fields );
+
+    return unless _is_uri($fields[0]) && _is_uri($fields[3]);
+
+    return @fields;
+}
+
+=head2 appendline( $line )
+
+Append a line of of BEACON format. This method parses the line, and calls the
+link handler, or error handler. In scalar context returns whether a link has
+been read (that can then be accessed with C<link>). In list context, returns
+the parsed link as list, or the empty list, if the line could not be parsed.
+
+=cut
+
+sub appendline {
+    my ($self, $line) = @_;
+    return unless defined $line;
+    chomp $line;
+
+    $self->{line}++;
+    $self->{currentline} = $line;
+    my @parts = split ('\|',$line);
+
+    return if (@parts < 1 || $parts[0] =~ /^\s*$/ );
+    my $link = $self->_fields( @parts );
+
+    my $has_link = $self->appendlink( @$link );
+
+    $self->{currentline} = undef;
+
+    if ( $has_link ) {
+        return wantarray ? @{ $self->{link} } : 1;
+    }
+
+    return;
+}
+
+=head2 appendlink ( $source [, $label [, $description [, $target ] ] ] )
+
+Append a link. The link is validated and returned as list of four values.
+On error the error handler is called and an empty list is returned.
+On success the link handler is called.
+
+=cut
+
+sub appendlink {
+    my $self = shift;
+
+    my @fields = map { defined $_ ? $_ : '' } @_[0..3];
+    @fields = map { s/^\s+|\s+$//g; $_ } @fields;
+
+    if ( $fields[0] eq '' ) {
+        $self->_handle_error( 'missing source' );
+        return;
+    } elsif ( grep { $_ =~ /\|/ } @fields ) {
+        $self->_handle_error( 'link fields must not contain \'|\'' );
+        return;
+    } elsif ( grep { $_ =~ /[\n\r]/ } @fields ) {
+        $self->_handle_error( 'link fields must not contain line breaks' );
+        return;
+    }
+
+    my $msg = $self->_checklink( @fields );
+    if ( $msg ) {
+        $self->_handle_error( $msg ); 
+        return;
+    }
+
+    # finally got a valid link
+    $self->{link} = \@fields;
+    $self->{meta}->{COUNT}++;
+
+    if ( defined $self->{expected_examples} ) { # examples may contain prefix
+        my @idforms = $fields[0];
+        my $prefix = $self->{meta}->{PREFIX};
+        push @idforms, $prefix . $fields[0] if defined $prefix;
+        foreach my $source (@idforms) {
+            if ( $self->{expected_examples}->{$source} ) {
+                delete $self->{expected_examples}->{$source};
+                $self->{expected_examples} = undef 
+                    unless keys %{ $self->{expected_examples} };
+            }
+        }
+    }
+
+    if ( $self->{link_handler} ) {
+        if ( $self->{link_handler} eq 'print' ) {
+            print plainbeaconlink( @fields ) . "\n";
+         } elsif ( $self->{link_handler} eq 'expand' ) { 
+            print join('|',$self->expanded) . "\n"; 
+         } else {
+            # TODO: call with expanded link on request
+            eval { $self->{link_handler}->( @fields ); };
+            if ( $@ ) {
+                $self->_handle_error( "link handler died: $@" );
+                return;
+            }
+        }
+    }
+
+    return @fields; # TODO: expanded?
+}
 
 =head1 FUNCTIONS
 
 The following functions are exported by default.
-is automatically exported 
 
 =head2 beacon ( [ $from ] { handler => coderef } )
 
-Shortcut for Data::Beacon-E<gt>new. To quickly parse a BEACON file, use:
-
-  use Data::Beacon;
-  beacon($file)->parse();
+Shortcut for C<Data::Beacon-E<gt>new>.
 
 =cut
 
@@ -368,59 +597,21 @@ sub beacon {
     return Data::Beacon->new( @_ );
 }
 
-=head2 parsebeaconlink ( $line [, $target ] )
+=head2 plainbeaconlink ( $source, $label, $description, $target )
 
-Parses a line, interpreted as link in BEACON format. Unless a target parameter
-is given, the last part of the line is used as link destination, if it looks 
-like an URI.
-
-Returns an array reference with four values on success, an empty array reference for empty linkes, an error string on failure, or undef is the supplied line was
-not defined. This method does not check whether the query identifier is a valid
-URI, because it may be expanded by a prefix.
+Serialize a link, consisting of source (mandatory), label, description,
+and target (all optional) as condensed string in BEACON format. This
+function does not check whether the arguments form a valid link or not.
+You can pass a simple link, as returned by the L</link> method, or an
+expanded link, as returned by L</expanded>.
 
 =cut
 
-sub parsebeaconlink {
-    my ($line, $target) = @_;
-
-    return unless defined $line;
-
-    my @parts = map { s/^\s+|\s+$//g; $_ } split('\|',$line);
-    my $n = @parts;
-    return [] if ($n < 1 || $parts[0] eq '');
-    return "found too many parts (>4), divided by '|' characters" if $n > 4;
-    my $link = [shift @parts,"","",""];
-
-    if ($target) {
-        $link->[1] = shift @parts if @parts;
-        $link->[2] = shift @parts if @parts;
-        # TODO: do we want both #TARGET links and explicit links in one file?
-        $link->[3] = shift @parts if @parts;
-    } else {
-        $link->[3] = pop @parts
-            if ($n > 1 && is_uri($parts[$n-2]));
-        $link->[1] = shift @parts if @parts;
-        $link->[2] = shift @parts if @parts;
-    }
-
-    return 'URI part has not valid URI form' if @parts; 
-
-    return $link;
-}
-
-=head2 getbeaconlink ( $id, $label, $description, $to )
-
-Serialize a link and return it as condensed string. You must provide four
-parameters as string, which all can be the empty string. 'C<|>' characters
-are silently removed. If the C<$to> is not empty but not an URI, or on other errors, the empty string is returned. The C<$id> parameter is not checked
-whether it is an URI because it may be abbreviated (without PREFIX).
-
-=cut
-
-sub getbeaconlink {
-    return if @_ < 4;
-    my @link = @_[0 .. 3]; 
-    @link = map { s/\|//g; $_; } @link;
+sub plainbeaconlink {
+    shift if ref($_[0]) and UNIVERSAL::isa($_[0],'Data::Beacon');
+    return '' unless @_; 
+    my @link = map { defined $_ ? $_ : '' } @_[0..3];
+    @link = map { s/^\s+|\s+$//g; $_; } @link;
     return '' if $link[0] eq '';
 
     if ( $link[3] eq '' ){
@@ -429,15 +620,13 @@ sub getbeaconlink {
             pop @link;
             pop @link if ($link[1] eq '');
         }
-    } elsif ( is_uri($link[3]) ) {
+    } elsif ( _is_uri($link[3]) ) { # only position of _is_uri where argument may be undefined
         my $uri = pop @link;
         if ($link[2] eq '') {
            pop @link;
            pop @link if ($link[1] eq '');
         }
         push @link, $uri;
-    } else {
-        return "";
     }
 
     return join('|', @link);
@@ -447,28 +636,50 @@ sub getbeaconlink {
 
 If you directly call any of this methods, puppies will die.
 
-=head2 _initparams ( [ $from ] { handler => coderef | option => value } )
+=head2 _initparams ( [ $from ] { handler => coderef | option => value } | $metafield )
 
 Initialize parameters as passed to C<new> or C<parse>. Known parameters
 are C<from>, C<error>, and C<link> (C<from> is not checked here). In 
-addition you cann pass C<premeta>
+addition you cann pass C<pre> and C<mtime> as options.
 
 =cut
 
 sub _initparams {
     my $self = shift;
+    my %param;
 
-    $self->{from} = (@_ % 2) ? shift(@_) : undef;
+    if ( @_ % 2 && !blessed($_[0]) && ref($_[0]) && ref($_[0]) eq 'HASH' ) {
+        my $pre = shift;
+        %param = @_;
+        $param{pre} = $pre;
+    } else {
+        $self->{from} = (@_ % 2) ? shift(@_) : undef;
+        %param = @_;
+    }
 
-    my %param = @_;
     $self->{from} = $param{from}
-        if defined $param{from};
+        if exists $param{from};
 
-    foreach my $name (qw(error link)) {
-        next unless defined $param{$name};
-        croak "$name handler must be code"
-            unless ref($param{$name}) and ref($param{$name}) eq 'CODE';
-        $self->{$name.'_handler'} = $param{$name};
+    if ( $param{errors} ) {
+        my $handler = $param{errors};
+        if ( $handler eq 'print' ) {
+           $handler = sub {
+              my ($msg, $lineno) = @_;
+              $msg .= " at line $lineno" if defined $lineno;
+              print STDERR "$msg\n";
+           };
+        }
+        croak 'error handler must be code, found:'
+            unless ref($handler) and ref($handler) eq 'CODE';
+        $self->{error_handler} = $handler;
+    }
+
+    if ( $param{links} ) {
+        my $handler = $param{links};
+        croak 'link handler must be code or \'print\' or \'expand\''
+            unless $handler =~ /^(print|expand)$/ 
+                or (ref($handler) and ref($handler) eq 'CODE');
+        $self->{link_handler} = $handler;
     }
 
     if ( defined $param{pre} ) {
@@ -478,6 +689,8 @@ sub _initparams {
     } elsif ( exists $param{pre} ) {
         $self->{pre} = undef;
     }
+
+    $self->{mtime} = $param{mtime};
 }
 
 =head2 _startparsing
@@ -498,6 +711,7 @@ sub _startparsing {
     $self->{meta} = { 'FORMAT' => 'BEACON' };
     $self->meta( %{ $self->{pre} } ) if $self->{pre};
     $self->{line} = 0;
+    $self->{link} = undef;
     $self->{errorcount} = 0;
     $self->{lasterror} = [];
     $self->{lookaheadline} = undef;
@@ -514,14 +728,22 @@ sub _startparsing {
         if ($type eq 'SCALAR') {
             $self->{inputlines} = [ split("\n",${$self->{from}}) ];
         } elsif ($type ne 'CODE') {
-            $self->_handle_error( "Unknown input $type", 0, '' );
+            $self->_handle_error( "Unknown input $type" );
             return;
         }
     } elsif( $self->{from} eq '-' ) {
         $self->{fh} = \*STDIN;
-    } elsif(!(open $self->{fh}, $self->{from})) {
-        $self->_handle_error( 'Failed to open ' . $self->{from}, 0, '' );
-        return;
+    } else {
+        if(!(open $self->{fh}, $self->{from})) {
+            $self->_handle_error( 'Failed to open ' . $self->{from} );
+            return;
+        }
+    }
+
+    # initlialize TIMESTAMP
+    if ($self->{mtime}) {
+        my @stat = stat( $self->{from} );
+        $self->meta('TIMESTAMP', gmtime( $stat[9] )->datetime() . 'Z' );
     }
 
     # start parsing
@@ -538,7 +760,7 @@ sub _startparsing {
             eval { $self->meta($1,$3); };
             if ($@) {
                 my $msg = $@; $msg =~ s/ at .*$//;
-                $self->_handle_error( $msg, $self->{line}, $line );
+                $self->_handle_error( $msg, $line );
             }
         } else {
             $self->{lookaheadline} = $line;
@@ -548,7 +770,7 @@ sub _startparsing {
     } while (defined $line);
 }
 
-=head2 _handle_error ( $msg, $lineno, $line )
+=head2 _handle_error ( $msg [, $line ] )
 
 Internal error handler that calls a custom error handler,
 increases the error counter and stores the last error. 
@@ -557,9 +779,12 @@ increases the error counter and stores the last error.
 
 sub _handle_error {
     my $self = shift;
-    $self->{lasterror} = [ @_ ];
+    my $msg = shift;
+    my $line = shift || $self->{currentline} || '';
+    chomp $line;
+    $self->{lasterror} = [ $msg, $self->{line}, $line ];
     $self->{errorcount}++;
-    $self->{error_handler}->( @_ ) if $self->{error_handler};
+    $self->{error_handler}->( $msg, $self->{line}, $line ) if $self->{error_handler};
 }
 
 =head2 _readline
@@ -575,7 +800,7 @@ sub _readline {
     } elsif (ref($self->{from}) && ref($self->{from}) eq 'CODE') {
         my $line = eval { $self->{from}->(); };
         if ($@) { # input handler died
-            $self->_handle_error( $@, $self->{lineno}, '' );
+            $self->_handle_error( $@, '' );
             $self->{from} = undef;
         }
         return $line;
@@ -584,79 +809,164 @@ sub _readline {
     }
 }
 
-=head2 _parseline ( $line )
+=head2 _fields
 
-Internally parse a line and call appropriate handlers etc.
-Returns a link as array reference, or an error message as string.
+Gets one or more fields, that are strings, which do not contain C<|> or
+newlines. The first string is not empty. Returns a reference to an array
+of four fields.
 
 =cut
 
-sub _parseline {
-    my ($self, $line) = @_;
+sub _fields {
+    my $self = shift;
+    my @parts = @_;
 
-    $self->{line}++;
-    my $link = parsebeaconlink( $line, $self->{meta}->{TARGET} );
+    my $n = scalar @parts;
 
-    if (!ref($link)) {
-        $self->_handle_error( $link, $self->{line}, $line );
-        return $link;
-    } 
+    my $link = [shift @parts,"","",""];
 
-    return $link unless @$link; # empty line or comment
-
-    my $fullid = $link->[0];
-    my $prefix = $self->{meta}->{PREFIX};
-    $fullid = $prefix . $fullid if defined $prefix;
-
-    if ( !is_uri($fullid) ) {
-        $link = "id must be URI: $fullid";
-        $self->_handle_error( $link, $self->{line}, $line );
-        return $link;
-    }
-
-    my $fulluri;
     my $target = $self->{meta}->{TARGET};
-    if (defined $target) {
-        $fulluri = $target;
-        my ($id,$label) = ($link->[0], $link->[1]);
-        $fulluri =~ s/{ID}/$id/g;
-        $fulluri =~ s/{LABEL}/$label/g;
+    my $targetprefix = $self->{meta}->{TARGETPREFIX};
+    if ($target or $targetprefix) {
+        $link->[1] = shift @parts if @parts;
+        $link->[2] = shift @parts if @parts;
+        # TODO: do we want both #TARGET links and explicit links in one file?
+        $link->[3] = shift @parts if @parts;
     } else {
-        $fulluri = $link->[3];
-    }
-    if ( !is_uri($fulluri) ) {
-        $link = "URI invalid: $fulluri";
-        $self->_handle_error( $link, $self->{line}, $line );
-        return $link;
+        $link->[3] = pop @parts
+            if ($n > 1 && _is_uri($parts[$n-2]));
+        $link->[1] = shift @parts if @parts;
+        $link->[2] = shift @parts if @parts;
     }
 
-    # Finally we got a valid link
+     return $link
+}
 
-    $self->{meta}->{COUNT}++;
+sub _checklink {
+    my ($self, @fields) = @_;
 
-    if ( defined $self->{expected_examples} ) { # examples may contain prefix
-        my @idforms = $link->[0];
-        push @idforms, $prefix . $link->[0] if defined $prefix;
-        foreach my $id (@idforms) {
-            if ( $self->{expected_examples}->{$id} ) {
-                delete $self->{expected_examples}->{$id};
-                $self->{expected_examples} = undef 
-                    unless keys %{ $self->{expected_examples} };
-            }
+    my @exp = @fields;
+    # TODO: check only - we don't need full expansion
+    $self->_expandlink( \@exp );
+
+    return "source is no URI: ".$exp[0]
+        unless _is_uri($exp[0]);
+
+    # TODO: we could encode bad characters etc.
+    return "target is no URI: ".$exp[3]
+        unless _is_uri($exp[3]);
+
+    return undef;
+}
+
+=head1 _expandlink ( $link )
+
+Expand a link, provided as array reference without validation. The link
+must have four defined, trimmed fields. After expansion, source and target
+must still be checked whether they are valid URIs.
+
+=cut
+
+sub _expandlink {
+    my ($self, $link) = @_;
+
+    my $prefix = $self->{meta}->{PREFIX};
+
+    my $source = $link->[0];
+
+    # TODO: document this expansion
+    if ( $link->[1] =~ /^[0-9]*$/ ) { # if label is number (of hits) or empty
+        my $label = $link->[1];
+        my $descr = $link->[2];
+
+        # TODO: handle zero hits
+        my $msg = $self->{meta}->{$label eq '1' ? 'ONEMESSAGE' : 'SOMEMESSAGE'}
+                || $self->{meta}->{'MESSAGE'};
+
+        if ( defined $msg ) {
+            _str_replace( $msg, '{id}', $link->[0] ); # unexpanded
+            _str_replace( $msg, '{hits}', $link->[1] );
+            _str_replace( $msg, '{label}', $link->[1] );
+            _str_replace( $msg, '{description}', $link->[2] ); 
+            _str_replace( $msg, '{target}', $link->[3] ); # unexpanded
+        } else {
+            $msg = $self->{meta}->{'NAME'} || $self->{meta}->{'INSTITUTION'};
         }
+        if ( defined $msg && $msg ne '' ) {
+            # if ( $link->[1] == "") $descr = $label;
+            $link->[1] = $msg;
+            $link->[1] =~ s/^\s+|\s+$//g;
+            $link->[1] =~ s/\s+/ /g;
+        }
+    } else {
+        _str_replace( $link->[1], '{id}', $link->[0] ); # unexpanded
+        _str_replace( $link->[1], '{description}', $link->[2] );
+        _str_replace( $link->[1], '{target}', $link->[3] ); # unexpanded
+        # trim label, because it may have changed
+        $link->[1] =~ s/^\s+|\s+$//g;
+        $link->[1] =~ s/\s+/ /g;
     }
 
-    # expand link
-    push @$link, $fullid;
-    push @$link, $fulluri;
+    # expand source
+    $link->[0] = $prefix . $link->[0] if defined $prefix;
 
-    if ($self->{link_handler}) {
-        eval { $self->{link_handler}->( @$link ); };
-        $self->_handle_error( "link handler died: $@", $self->{line}, $line )
-            if $@;
+    # expand target
+    my $target = $self->{meta}->{TARGET};
+    my $targetprefix = $self->{meta}->{TARGETPREFIX};
+    if (defined $target) {
+        $link->[3] = $target;
+        my $label = $link->[1];
+        $link->[3] =~ s/{ID}/$source/g;
+        $link->[3] =~ s/{LABEL}/uri_escape($label)/eg;
+    } elsif( defined $targetprefix ) {
+        $link->[3] = $targetprefix . $link->[3];
     }
 
-    return $link;
+    return @$link;
+}
+
+sub _str_replace {
+    $_[0] =~ s/\Q$_[1]\E/$_[2]/g;
+}
+
+=head2 _is_uri
+
+Check whether a given string is an URI. This function is based on code of
+L<Data::Validate::URI>, adopted for performance.
+
+=cut
+
+sub _is_uri {
+    my $value = $_[0];
+    
+    return unless defined($value);
+    
+    # check for illegal characters
+    return if $value =~ /[^a-z0-9\:\/\?\#\[\]\@\!\$\&\'\(\)\*\+\,\;\=\.\-\_\~\%]/i;
+    
+    # check for hex escapes that aren't complete
+    return if $value =~ /%[^0-9a-f]/i;
+    return if $value =~ /%[0-9a-f](:?[^0-9a-f]|$)/i;
+    
+    # split uri (from RFC 3986)
+    my($scheme, $authority, $path, $query, $fragment)
+      = $value =~ m|(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?|;
+
+    # scheme and path are required, though the path can be empty
+    return unless (defined($scheme) && length($scheme) && defined($path));
+    
+    # if authority is present, the path must be empty or begin with a /
+    if(defined($authority) && length($authority)){
+        return unless(length($path) == 0 || $path =~ m!^/!);    
+    } else {
+        # if authority is not present, the path must not start with //
+        return if $path =~ m!^//!;
+    }
+    
+    # scheme must begin with a letter, then consist of letters, digits, +, ., or -
+    return unless lc($scheme) =~ m!^[a-z][a-z0-9\+\-\.]*$!;
+    
+    return 1;
 }
 
 1;
@@ -665,8 +975,13 @@ __END__
 
 =head1 DEVELOPMENT
 
-For the latest development snapshot, bug reports, feature requests,
-and such, visit http://github.com/nichtich/p5-data-beacon
+Please visit http://github.com/nichtich/p5-data-beacon for the latest
+development snapshot, bug reports, feature requests, and such.
+
+=head1 SEE ALSO
+
+See also L<SeeAlso::Server> for an API to exchange single sets of 
+beacon links, based on the same source identifier.
 
 =head1 AUTHOR
 
@@ -679,3 +994,6 @@ Copyright (C) 2010 by Verbundzentrale Goettingen (VZG) and Jakob Voss
 This library is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself, either Perl version 5.8.8 or, at
 your option, any later version of Perl 5 you may have available.
+
+In addition you may fork this library under the terms of the 
+GNU Affero General Public License.

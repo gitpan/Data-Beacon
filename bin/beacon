@@ -8,14 +8,17 @@ beacon - beacon command line client
 
 use strict;
 
-our $VERSION = '0.22';
+our $VERSION = '0.2.4';
 
 use Getopt::Long;
 use Pod::Usage;
 use Data::Beacon;
+use Data::Beacon::Collection;
 
-my ($help, $man, $configfile, $file, $name, $testmode, $quiet, $linksmode,
-    $premeta);
+my ($configfile, $file, $name, $testmode, $linksmode, $premeta, $mtime, $dbi,
+    $help, $man, $quiet, $verbose, $query, $user, $password);
+my %commands = map { $_ => 1 }
+    qw(dump expand about parse list init insert update upsert delete query queryexpand);
 
 GetOptions(
     "config:s" => \$configfile,
@@ -26,25 +29,56 @@ GetOptions(
     "name:s" => \$name,
     "test" => \$testmode,
     "quiet" => \$quiet,
-    "links" => \$linksmode,
-    # -time : use #TIMESTAMP from input file
+    "verbose" => \$verbose,
+    "mtime" => \$mtime,
+    "dbi:s" => \$dbi,
+    "user:s" => \$user,
+    "password:s" => \$password,
+    # TODO: head and tail
 ) or pod2usage(2);
-pod2usage(1) if $help or (@ARGV and $ARGV[0] eq 'help');
+my $msg = "beacon version $VERSION (based on Data::Beacon ${Data::Beacon::VERSION})";
+pod2usage( -msg => $msg, -verbose => 1 ) 
+    if $help or (@ARGV and $ARGV[0] eq 'help');
 pod2usage(-verbose => 2) if $man;
 
-my $beaconstore; # TODO: parse configfile and initialize BeaconStore, if required
+my %handlers = ( errors => 'print' );
+$handlers{errors} = undef if $quiet;
+
+if ( $configfile ) {
+    open (CNF, $configfile) || failed("could not open config file: $configfile");
+    my @cnf = grep { $_ ne "" } 
+              map { chomp; $_ =~ s/^\s*|#.*$//g; $_ } <CNF>;
+    my $line = 0;
+    my %config = map { 
+        $line++;
+        $_ =~ /^([^ ]+)\s*=\s*(.*)$/ || 
+            failed("error in config file $configfile line $line");
+        $1 => $2 
+    } @cnf;
+    $dbi ||= $config{dbi};
+    $user ||= $config{user};
+    $password ||= $config{password};
+}
 
 my $beaconfile;
-my %handlers = ( 
-    error => sub {
-        my ($msg, $lineno, $line) = @_;
-        print STDERR "$msg at line $lineno\n";
-    }
-);
 
-$handlers{error} = undef if $quiet;
+my $collection;
+if ( $dbi ) {
+    $dbi = "dbi:$dbi" unless $dbi =~ /^dbi:/;
+    my %opt = (dbi => $dbi);
+    $opt{user} = $user if defined $user;
+    $opt{password} = $password if defined $password;
+    $opt{error} = \&failed unless $quiet;
+    $collection = Data::Beacon::Collection->new( %opt );
+    failed( $collection->lasterror ) if $collection->errorcount;
+}
 
 # additional sophisticated command line parsing follows
+my %metafields;
+while (@ARGV[0] =~ /^([^=]*)=(.*)$/) {
+    $metafields{$1} = $2;
+    shift @ARGV;
+}
 
 my $cmd = shift @ARGV;
 
@@ -53,7 +87,7 @@ if (defined $cmd) {
         $cmd = 'dump'; 
         $linksmode = 1;
     }
-    if (!($cmd =~ /^(dump|expand|about|parse|list|init|insert|update|delete|query)$/)) {
+    unless ($commands{$cmd}) {
         if (defined $file) {
             $name = $cmd;
             $cmd = shift @ARGV;
@@ -73,7 +107,7 @@ unless ($cmd) {
     if (defined $file or defined $name) {
         $cmd = 'about';
     } else {
-        failed("Please specify at least a command, name, file, or -h for help\n");
+        failed("Please specify at least a command, name, file, or -h or -m for help!\n");
     }
 }
 
@@ -81,12 +115,18 @@ unless ($cmd) {
 if (defined $premeta) {
     my $m = beacon($premeta);
     failed( $m->lasterror ) if $m->errorcount;
-    $handlers{pre} = { $m->meta() };
+    $handlers{pre}= { $m->meta() };
+}
+
+$handlers{pre} = { } if (%metafields && !$handlers{pre});
+foreach (keys %metafields) {
+    $handlers{pre}->{$_} = $metafields{$_};
 }
 
 sub requirefile {
     $file = shift @ARGV unless defined $file;
     failed("Please specifiy a file to parse") unless defined $file;
+    $handlers{mtime} = $file if $mtime;
     $beaconfile = beacon( $file, %handlers );
 }
 
@@ -94,12 +134,12 @@ sub requirename {
     $name = shift @ARGV unless defined $name;
     failed("Please specifiy a beacon name!") unless defined $name;
     $name = lc($name);
-    failed("Not a valid beacon name: $name") unless $name =~ /^[a-z][a-z0-9_.-]+$/;
+    failed("Not a valid beacon name: $name") unless $name =~ /^[a-z][a-z0-9_.-]*$/;
 }
 
 sub requirestore {
-    failed("Command $cmd requires a beacon store. Please provide a config file")
-        unless $beaconstore;
+    failed("Command $cmd requires a beacon collection.")
+        unless $collection;
 }
 
 
@@ -108,9 +148,13 @@ if ($cmd eq 'list' or $cmd eq 'init') {
 } elsif($cmd eq 'parse') {
     requirefile();
 } else {
-    if ($cmd =~ /^(expand|dump|about|query)$/) {
-        $beaconstore ? requirename() : requirefile();
-    } else { # delete|insert|update : require store and name
+    if ($cmd =~ /^((query)?expand|dump|about|query)$/) {
+        $collection ? requirename() : requirefile();
+        if ( $cmd =~ /^query(expand)?$/ ) {
+            $query = shift @ARGV;
+            failed("Please specifiy an id to query for!") unless defined $query;
+        };
+    } else { # delete|insert|update|upsert : require collection and name
         requirestore();
         requirename();
         requirefile() if $cmd =~ /^(insert|update)$/;
@@ -126,37 +170,85 @@ if ($testmode) {
     print "  name:    $name\n";
     print "  config:  $configfile\n";
     print "  pre:     $premeta\n" if defined $premeta;
+    print "  query:   $query\n" if $cmd eq 'query';
     exit; # TODO: we could perform some more action but read-only
+}
+
+my $beacon = $beaconfile;
+if ( $collection ) {
+    if ( $cmd =~ /^(about|dump|(query)?expand|query|delete|update)$/ ) {
+        $beacon = $collection->get( $name );
+        if (!$beacon) {
+            my $msg = $collection->lasterror;
+            $msg ||= "could not find in collection: $name";
+            failed($msg); 
+        }
+    }
 }
 
 # Now finally do something
 
-if ($cmd eq 'parse') { # parse a file
-    $beaconfile->parse();
-    print $beaconfile->metafields(); # extended metafields
+if ( $cmd eq 'parse' ) { # parse a file
+    if ( !$beaconfile->errorcount ) { # unless file not found
+        $beaconfile->parse();
+        print $beaconfile->metafields();
+    }
     # TODO: show whether there have been errors
-} elsif($cmd eq 'about') { # show info about a file or stored beacon
-    # TODO: beaconstore
-    print $beaconfile->metafields(); 
-} elsif($cmd eq 'dump') { # dump a full, parsed beacon file
-    print $beaconfile->metafields() unless $linksmode;
-    $beaconfile->parse(
-        'link' => sub { print getbeaconlink(@_) . "\n"; }
-    );
+} elsif( $cmd eq 'about' ) { # show info about a file or stored beacon
+    print $beacon->metafields(); 
+} elsif( $cmd eq 'dump' ) { # dump a full, parsed beacon file
+    print $beacon->metafields() unless $linksmode;
+    $beacon->parse( links => 'print' );
     # TODO: we may warn on errors, wrong count etc.
-} elsif($cmd eq 'expand') { # dump a full, parsed beacon file
-    $beaconfile->parse(
-        'link' => sub {  # TODO: put this into the package and test it
-            my ($id, $label, $description, $to, $fullid, $fulluri) = @_;
-            my @link = $fullid;
-            push @link, $label if $label ne '' or $description ne '';
-            push @link, $description if $description ne '';
-            push @link, $fulluri;
-            print join('|', @link) . "\n";
+} elsif( $cmd eq 'expand' ) { # dump a full, parsed beacon file
+    $beacon->parse( links => 'expand' );
+        # links => sub { # TODO: implement this method
+        #    print join('|', $beacon->expandlink(@_)) . "\n";
+        # });
+} elsif( $cmd =~ /^query(expand)?$/ ) {
+    my $expand = $1;
+    if ( $beacon->can('query') ) {
+        my $links = $beacon->query( $query ); # TODO use link handler
+        if ($links) {
+            foreach my $l (@$links) {
+                if ( $expand ) { # TODO move to the library
+                    print join('|', $beacon->expandlink(@$l)) . "\n";
+                } else {
+                    print plainbeaconlink(@$l)."\n";
+                }
+            }
         }
-    );
-} # TODO: implement other commands
+    } else {
+        # start parsing
+        while ( my @link = $beaconfile->nextlink ) {
+            print plainbeaconlink(@link)."\n" if $link[0] eq $query;
+        }
+    }
+} elsif( $cmd eq 'list' ) {
+    info("Listing all collected Beacons:");
+    my @list = $collection->list();
+    print join("\n", @list). "\n" if @list;
+} elsif( $cmd eq 'insert' ) {
+    info("Inserting new Beacon $name");
+    failed("please use 'update' to replace existing Beacon $name")
+        if ( $collection->get( $name ) );
+    $collection->insert( $name, $beaconfile );
+} elsif( $cmd eq 'update' ) {
+    info("Updating Beacon $name");
+    failed("please use 'insert' to add non-existing Beacon $name")
+        if ( !$collection->get( $name ) );
+    $collection->insert( $name, $beaconfile );
+} elsif( $cmd eq 'delete' ) {
+    info("Deleting Beacon $name");
+    failed("could not remove Beacon $name")
+        unless $collection->remove( $name );
+}
 
+# TODO: implement command 'init' if needed
+
+sub info {
+    print $_[0] . "\n" if $verbose;
+}
 
 sub failed { # error handler
     my $msg = shift;
@@ -166,62 +258,119 @@ sub failed { # error handler
     exit(1);
 }
 
+__END__
+
 =head1 SYNOPSIS
 
-beacon [ <options> ] [ <command> ] [ <file> ]
+beacon [ <options> ] {KEY=VALUE} [ <command> <name> ] [ <file> ]
 
 =head1 ARGUMENTS
 
- -file <name>   specify a file (use '-' for stdin)
+  -file <name>   specify a BEACON file (use '-' for stdin)
+  -name <name>   specify a name (for Beacons in a collection)
+  -pre <file>    start with meta fields from a given BEACON file
+  -mtime         use file's modification time if no TIMESTAMP given
+  -test          enable test mode (no stored Beacon is modified)
+  -quiet         suppress all error messages
+  -help          brief help message
+  -man           full documentation with examples
+  -verbose       print additional messages
+  -dbi <dbi>     database connection to a beacon collection
+  -config <file> specify config file, e.g. for database connection
 
- -links       only print links, without meta fields
- -quiet       suppress all error messages
- -test        enable test mode (no stored beacon is modified)
- -help        brief help message
- -pre <file>  start with meta fields from a given beacon file
- -man         full documentation with examples
+  about  <name>  show meta information about a file or stored beacon
+  parse  <name>  parse a full BEACON file and print meta information
+  dump   <name>  parse a BEACON file or dump a stored beacon
+  links  <name>  only print links, without meta fields
+  expand <name>  parse and expand a BEACON file or dump a stored Beacon
+  query <name> <id> query a BEACON file or stored Beacon for an identifier
 
- about <name>    show meta information about a file or stored beacon
- parse <file>    parse a full beacon file and print meta information
- dump <name>     parse a beacon file or dump a stored beacon
- links <name>    same as dump, but omit meta fields
- expand <name>   parse and expand a beacon file or dump a stored beacon
-
-The following options and commands are not fully implemented yet, but 
-planned to support storing and modifying beacons in a database or other store.
-
- -config <file> specify config file
- -name <name>   specify a name (for stored beacons)
-
- init           initialize beacon store
- list           list names of all stored beacons
- insert <name> <file>  insert a new beacon from file to a store
- update <name> <file>  replace a beacon from file to a store
- delete <name>         remove a beacon from a store
-
- query <name> <id>     query a beacon (stored of file) for an id
+  list                  list names of all Beacons in a collection
+  insert <name> <file>  insert a new beacon from file to a collection
+  update <name> <file>  replace a beacon from file to a collection
+  delete <name>         remove a beacon from a collection
 
 =head1 DESCRIPTION
 
 This command line script manages beacon files. You can use it for parsing,
-validating, expanding, and storing beacon files in a database (the latter
-not implemented yet).
+validating, expanding, and storing beacon files.
 
-The first command line argument is treated as command
-or as [file] name. To simply show the meta fields of a beacon file (command
-'about', you can use any one of the following:
+=head2 COMMANDS
+
+The first command line argument is treated as command or as [file]name,
+if it does not match a known command. The following commands are recognized:
+
+=over
+
+=item about
+
+Print the meta fields. This command is the default, if no command is specified.
+Parsing BEACON file with this commands stops at the first non-meta line, so 
+errors in the links will not be detected.
+
+=item parse
+
+Print the meta fields, possibly extended by automatically generated fields,
+such as C<COUNT> after parsing the full BEACON file. Use this command to
+validate a BEACON file.
+
+=item links
+
+Parse a BEACON file and print all valid links.
+
+=item dump
+
+Parse a BEACON file and print all meta fields (possibly extended),
+followed by all valid links.
+
+=item expand
+
+Print all valid links in fully expanded form, without meta fields.
+
+=item query
+
+Query a BEACON file ore stored BEACON for an id (without prefix).
+
+=back
+
+=head1 EXAMPLES
+
+To show the meta fields of a BEACON file (command C<about>):
+
+  beacon about myfile
+
+As C<about> is the default command, alternatively you can use one of:
 
   beacon myfile
   beacon -file myfile
   beacon -file myfile about
-  beacon about myfile
 
+To connect to a collection of Beacons, you can use the dbi option:
 
+  beacon -dbi SQLite:dbname=mydb.db
+  beacon -dbi mysql:database=mydb;mysql_read_default_file=.my.cnf
+
+It is recommended to put dbi, user, and password in a configuration
+file. You can then simply say:
+
+  beacon -c my.conf list
+  beacon -c my.conf about mybeacon
+  beacon -c my.conf query mybeacon someid
+
+To validate a BEACON file and show errors only:
+
+  beacon parse myfile > /dev/null
+
+Prepend meta fields from file C<mfields> to BEACON file C<myfile>.
+Use last modification time of C<myfile> as TIMESTAMP if not included
+in C<myfile>:
+
+  beacon -pre myfields -mtime dump myfile
 
 =head1 NOTE
 
-The command name 'beacon' clashes with a tool of same name from the
-ax25-tools package (L<http://www.linux-ax25.org/>. If you need to use
+The command name C<beacon> clashes with a tool of same name from the
+ax25-tools package (L<http://www.linux-ax25.org/>). If you need to use
 beacon together with hamradio, you need to rename one of the two scripts.
 
 =head1 AUTHOR
@@ -230,9 +379,11 @@ Jakob Voss C<< <jakob.voss@gbv.de> >>
 
 =head1 LICENSE
 
-Copyright (C) 2007-2010 by Verbundzentrale Goettingen (VZG) and Jakob Voss
+Copyright (C) 2010 by Verbundzentrale Goettingen (VZG) and Jakob Voss
 
 This library is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself, either Perl version 5.8.8 or, at
 your option, any later version of Perl 5 you may have available.
 
+In addition you may fork this library under the terms of the 
+GNU Affero General Public License.

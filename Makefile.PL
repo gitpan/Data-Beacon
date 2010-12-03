@@ -13,7 +13,9 @@ use ExtUtils::MakeMaker;
         'Getopt::Long' => '0',
         'Pod::Usage' => '0',
         'Data::Validate::URI' => 0,
-        'Time::Piece' => 0,
+        'URI::Escape' => '1.0',
+        'Scalar::Util' => 0,   # core
+        'Time::Piece' => 1.08, # 2002, not core
     },
     dist            => {
         COMPRESS => 'gzip -9f',
@@ -22,5 +24,14 @@ use ExtUtils::MakeMaker;
     depend          => {
         Makefile => '$(VERSION_FROM)'
     },
-    EXE_FILES       => [ 'bin/beacon' ]
+    EXE_FILES       => [ 'bin/beacon' ],
+    LICENSE         => 'perl',
+    META_MERGE => {
+        resources => {
+            license => 'http://dev.perl.org/licenses/',
+            homepage => 'http://github.com/nichtich/p5-data-beacon',
+            bugtracker => 'http://github.com/nichtich/p5-data-beacon/issues',
+            repository => 'http://github.com/toddr/p5-data-beacon',
+        }
+    }
 );

@@ -1,11 +1,15 @@
 bin/beacon
 Changes
 lib/Data/Beacon.pm
+lib/Data/Beacon/Collection.pm
+lib/Data/Beacon/Collection/DBI.pm
+lib/Data/Beacon/DBI.pm
 Makefile.PL
 MANIFEST			This list of files
 README
 t/beacon.t
 t/beacon1.txt
 t/beacon2.txt
+t/collection.t
 t/pod.t
 META.yml                                 Module meta-data (added by MakeMaker)
