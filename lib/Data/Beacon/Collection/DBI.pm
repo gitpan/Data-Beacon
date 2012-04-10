@@ -1,21 +1,13 @@
-package Data::Beacon::Collection::DBI;
-
 use strict;
 use warnings;
-
-=head1 NAME
-
-Data::Beacon::Collection::DBI - Collection of BEACONs in a database
-
-=cut
+package Data::Beacon::Collection::DBI;
+#ABSTRACT: Collection of BEACONs in a database
 
 use base 'Data::Beacon::Collection';
 use Data::Beacon::DBI;
 use Carp qw(croak);
 use Scalar::Util qw(reftype);
 use DBI;
-
-our $VERSION = '0.1.0';
 
 =head1 DESCRIPTION
 
@@ -34,7 +26,7 @@ sub new {
     my $self = bless { }, $class;
 
     $self->_init( @_ );
-    croak $self->lasterror if $self->errorcount;
+    croak $self->lasterror if $self->errors;
 
     return $self;
 }
@@ -185,14 +177,14 @@ sub lasterror {
     return $_[0]->{lasterror}->[0];
 }
 
-=head2 errorcount
+=head2 errors
 
 Returns the number of errors or zero.
 
 =cut
 
-sub errorcount {
-    return $_[0]->{errorcount};
+sub errors {
+    return $_[0]->{errors};
 }
 
 =head2 _handle_error ( $msg )
@@ -205,7 +197,7 @@ increases the error counter and stores the last error.
 sub _handle_error {
     my $self = shift;
     $self->{lasterror} = [ @_ ];
-    $self->{errorcount}++;
+    $self->{errors}++;
     $self->{error_handler}->( @_ ) if $self->{error_handler};
 }
 
@@ -215,7 +207,7 @@ sub _init {
     my (%param) = @_;
 
     $self->{lasterror} = [];
-    $self->{errorcount} = 0;
+    $self->{errors} = 0;
     $self->{error_handler} = undef;
 
     my $dsn = $param{dbi};
@@ -345,21 +337,3 @@ SQL
 }
 
 1;
-
-__END__
-
-=head1 AUTHOR
-
-Jakob Voss C<< <jakob.voss@gbv.de> >>
-
-=head1 LICENSE
-
-Copyright (C) 2010 by Verbundzentrale Goettingen (VZG) and Jakob Voss
-
-This library is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself, either Perl version 5.8.8 or, at
-your option, any later version of Perl 5 you may have available.
-
-In addition you may fork this library under the terms of the 
-GNU Affero General Public License.
-

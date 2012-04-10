@@ -1,37 +1,51 @@
-use 5.8.2;
-use strict;
-use ExtUtils::MakeMaker;
 
-&WriteMakefile(
-    NAME            => 'Data::Beacon',
-    DISTNAME        => 'Data-Beacon',
-    VERSION_FROM    => 'lib/Data/Beacon.pm',
-    ABSTRACT_FROM   => 'lib/Data/Beacon.pm',
-    PMLIBDIRS       => [ qw( lib/ ) ],
-    AUTHOR          => 'Jakob Voss <jakob.voss@gbv.de>',
-    PREREQ_PM       => {
-        'Getopt::Long' => '0',
-        'Pod::Usage' => '0',
-        'Data::Validate::URI' => 0,
-        'URI::Escape' => '1.0',
-        'Scalar::Util' => 0,   # core
-        'Time::Piece' => 1.08, # 2002, not core
-    },
-    dist            => {
-        COMPRESS => 'gzip -9f',
-        SUFFIX => 'gz',
-    },
-    depend          => {
-        Makefile => '$(VERSION_FROM)'
-    },
-    EXE_FILES       => [ 'bin/beacon' ],
-    LICENSE         => 'perl',
-    META_MERGE => {
-        resources => {
-            license => 'http://dev.perl.org/licenses/',
-            homepage => 'http://github.com/nichtich/p5-data-beacon',
-            bugtracker => 'http://github.com/nichtich/p5-data-beacon/issues',
-            repository => 'http://github.com/toddr/p5-data-beacon',
-        }
-    }
+use strict;
+use warnings;
+
+
+
+use ExtUtils::MakeMaker 6.30;
+
+
+
+my %WriteMakefileArgs = (
+  "ABSTRACT" => "BEACON format validating parser and serializer",
+  "AUTHOR" => "Jakob Vo\303\237",
+  "BUILD_REQUIRES" => {},
+  "CONFIGURE_REQUIRES" => {
+    "ExtUtils::MakeMaker" => "6.30"
+  },
+  "DISTNAME" => "Data-Beacon",
+  "EXE_FILES" => [
+    "bin/beacon"
+  ],
+  "LICENSE" => "perl",
+  "NAME" => "Data::Beacon",
+  "PREREQ_PM" => {},
+  "VERSION" => "0.2.7",
+  "test" => {
+    "TESTS" => "t/*.t"
+  }
 );
+
+
+unless ( eval { ExtUtils::MakeMaker->VERSION(6.56) } ) {
+  my $br = delete $WriteMakefileArgs{BUILD_REQUIRES};
+  my $pp = $WriteMakefileArgs{PREREQ_PM};
+  for my $mod ( keys %$br ) {
+    if ( exists $pp->{$mod} ) {
+      $pp->{$mod} = $br->{$mod} if $br->{$mod} > $pp->{$mod};
+    }
+    else {
+      $pp->{$mod} = $br->{$mod};
+    }
+  }
+}
+
+delete $WriteMakefileArgs{CONFIGURE_REQUIRES}
+  unless eval { ExtUtils::MakeMaker->VERSION(6.52) };
+
+WriteMakefile(%WriteMakefileArgs);
+
+
+
