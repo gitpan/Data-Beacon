@@ -6,7 +6,7 @@ build_requires: {}
 configure_requires:
   ExtUtils::MakeMaker: 6.30
 dynamic_config: 0
-generated_by: 'Dist::Zilla version 4.300006, CPAN::Meta::Converter version 2.113640'
+generated_by: 'Dist::Zilla version 4.300023, CPAN::Meta::Converter version 2.120921'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -16,4 +16,4 @@ resources:
   bugtracker: https://github.com/nichtich/p5-data-beacon/issues
   homepage: https://github.com/nichtich/p5-data-beacon
   repository: https://github.com/nichtich/p5-data-beacon.git
-version: 0.2.7
+version: 0.3.0
