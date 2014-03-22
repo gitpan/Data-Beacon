@@ -1,14 +1,9 @@
 #!/usr/bin/perl
-
-=head1 NAME
-
-beacon - beacon command line client
-
-=cut
+#PODNAME: beacon
+#ABSTRACT: beacon command line client
+our $VERSION = '0.3.1'; #VERSION
 
 use strict;
-
-our $VERSION = '0.2.4';
 
 use Getopt::Long;
 use Pod::Usage;
@@ -35,7 +30,7 @@ GetOptions(
     "password:s" => \$password,
     # TODO: head and tail
 ) or pod2usage(2);
-my $msg = "beacon version $VERSION (based on Data::Beacon ${Data::Beacon::VERSION})";
+my $msg = "beacon version $VERSION";
 pod2usage( -msg => $msg, -verbose => 1 ) 
     if $help or (@ARGV and $ARGV[0] eq 'help');
 pod2usage(-verbose => 2) if $man;
@@ -232,30 +227,21 @@ sub failed { # error handler
 
 __END__
 
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+beacon - beacon command line client
+
+=head1 VERSION
+
+version 0.3.1
+
 =head1 SYNOPSIS
 
 beacon [ <options> ] {KEY=VALUE} [ <command> <name> ] [ <file> ]
-
-=head1 ARGUMENTS
-
-  -file <name>   specify a BEACON file (use '-' for stdin)
-  -name <name>   specify a name (for Beacons in a collection)
-  -pre <file>    start with meta fields from a given BEACON file
-  -mtime         use file's modification time if no TIMESTAMP given
-  -test          enable test mode (no stored Beacon is modified)
-  -quiet         suppress all error messages
-  -help          brief help message
-  -man           full documentation with examples
-  -verbose       print additional messages
-  -dbi <dbi>     database connection to a beacon collection
-  -config <file> specify config file, e.g. for database connection
-
-  about  <name>  show meta information about a file or stored beacon
-  parse  <name>  parse a full BEACON file and print meta information
-  dump   <name>  parse a BEACON file or dump a stored beacon
-  links  <name>  only print links, without meta fields
-  expand <name>  parse and expand a BEACON file or dump a stored Beacon
-  query <name> <id> query a BEACON file or stored Beacon for an identifier
 
 =head1 DESCRIPTION
 
@@ -299,6 +285,27 @@ Query a BEACON file ore stored BEACON for an id (without prefix).
 
 =back
 
+=head1 ARGUMENTS
+
+  -file <name>   specify a BEACON file (use '-' for stdin)
+  -name <name>   specify a name (for Beacons in a collection)
+  -pre <file>    start with meta fields from a given BEACON file
+  -mtime         use file's modification time if no TIMESTAMP given
+  -test          enable test mode (no stored Beacon is modified)
+  -quiet         suppress all error messages
+  -help          brief help message
+  -man           full documentation with examples
+  -verbose       print additional messages
+  -dbi <dbi>     database connection to a beacon collection
+  -config <file> specify config file, e.g. for database connection
+
+  about  <name>  show meta information about a file or stored beacon
+  parse  <name>  parse a full BEACON file and print meta information
+  dump   <name>  parse a BEACON file or dump a stored beacon
+  links  <name>  only print links, without meta fields
+  expand <name>  parse and expand a BEACON file or dump a stored Beacon
+  query <name> <id> query a BEACON file or stored Beacon for an identifier
+
 =head1 EXAMPLES
 
 To show the meta fields of a BEACON file (command C<about>):
@@ -329,15 +336,13 @@ beacon together with hamradio, you need to rename one of the two scripts.
 
 =head1 AUTHOR
 
-Jakob Voss C<< <jakob.voss@gbv.de> >>
+Jakob Voß
 
-=head1 LICENSE
+=head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2010 by Verbundzentrale Goettingen (VZG) and Jakob Voss
+This software is copyright (c) 2014 by Jakob Voß.
 
-This library is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself, either Perl version 5.8.8 or, at
-your option, any later version of Perl 5 you may have available.
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.
 
-In addition you may fork this library under the terms of the 
-GNU Affero General Public License.
+=cut
